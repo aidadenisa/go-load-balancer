@@ -10,7 +10,7 @@
       "request": "launch",
       "mode": "auto",
       "program": "${workspaceRoot}/go-load-balancer",
-      "args": ["-w", "test.txt"]
+      "args": ["-healthCheckSec", "2"]
     }
   ]
 }

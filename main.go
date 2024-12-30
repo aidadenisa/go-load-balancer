@@ -1,40 +1,28 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 )
 
-type RoundRobinBalancer struct {
-	servers []string
-	counter int
-}
-
-func NewRoundRobinBalancer() RoundRobinBalancer{
-	return RoundRobinBalancer{
-		servers: []string{"http://localhost:3200", "http://localhost:3201", "http://localhost:3202"},
-		counter: -1,
-	}
-}
-
-func (b *RoundRobinBalancer) nextServer() string {
-	b.counter = b.counter + 1
-	// next server is at the index of (the current counter) mod (the length of the servers list)
-	return b.servers[b.counter % len(b.servers)]
-}
-
 
 func forwardReq(balancer RoundRobinBalancer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		serverURL := balancer.nextServer()
+		server, err := balancer.NextServer()
+		if err != nil {
+			fmt.Println(err)
+			http.Error(w, "error", 500)
+			return 
+		}
 
-		fmt.Printf("%s %s from %s to %s, user agent %s, accept %s\n", r.Method, r.URL.Path, r.RemoteAddr, serverURL, r.UserAgent(), r.Header.Get("Accept"))
 		httpClient := http.Client{}
 
 		// Create new req to hardcoded BE server
-		request, err := http.NewRequest(r.Method, serverURL + r.URL.RequestURI(), r.Body)
+		request, err := http.NewRequest(r.Method, server.URL + r.URL.RequestURI(), r.Body)
 		if err != nil {
 			fmt.Println(err)
 			http.Error(w, "error", 500)
@@ -62,6 +50,8 @@ func forwardReq(balancer RoundRobinBalancer) http.HandlerFunc {
 			http.Error(w, "error", 500)
 			return 
 		}
+
+		fmt.Printf("%s %s from %s to %s, user agent %s, accept %s\n", r.Method, r.URL.Path, r.RemoteAddr, server.URL, r.UserAgent(), r.Header.Get("Accept"))
 		fmt.Printf("Resp %d, body: %s\n", resp.StatusCode, string(body))
 		w.Write(body)
 	}
@@ -70,9 +60,37 @@ func forwardReq(balancer RoundRobinBalancer) http.HandlerFunc {
 
 
 func main() {
-	balancer := NewRoundRobinBalancer()
+	healthCheckIntervalSeconds := flag.Int("healthCheckSec", 10, "health check interval in seconds")
+	flag.Parse()
 
+	servers := []Server{
+		{ URL: "http://localhost:3200", Healthy: false, HealthCheckPath: "/health"}, 
+		{ URL: "http://localhost:3201", Healthy: false, HealthCheckPath: "/health"}, 
+		{ URL: "http://localhost:3202", Healthy: false, HealthCheckPath: "/health"}, 
+	}
+
+	errChan := make(chan error)
+	ctx, cancel := context.WithCancel(context.Background())
+	
+
+	// Health Check
+	healthChecker := NewHealthChecker(&servers, *healthCheckIntervalSeconds)
+	go healthChecker.checkServersHealth(errChan, ctx)
+
+	// Round Robin Balancer
+	balancer := NewRoundRobinBalancer(&servers)
+
+	// Routes
 	http.HandleFunc("/", forwardReq(balancer))
 
-	log.Fatal(http.ListenAndServe(":3222", nil))
+	// Serve the http server
+	go func() {
+		if err := http.ListenAndServe(":3222", nil) ; err != nil {
+			errChan <- err
+		}
+	}()
+
+	err := <-errChan
+	cancel()
+	log.Fatal(err)
 }
