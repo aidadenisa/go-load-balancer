@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -19,8 +20,10 @@ func NewHealthChecker(servers *[]Server, healthCheckIntervalSeconds int) HealthC
 	}
 }
 
-func (h *HealthChecker) checkServersHealth(errChan chan<- error, ctx context.Context) {
+func (h *HealthChecker) checkServersHealth(wg *sync.WaitGroup, errChan chan<- error, ctx context.Context) {
+	defer wg.Done()
 	httpClient := http.Client{}
+	
 	for {
 		select {
 		case <-ctx.Done(): 

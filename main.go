@@ -5,8 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 )
 
 
@@ -69,13 +72,20 @@ func main() {
 		{ URL: "http://localhost:3202", Healthy: false, HealthCheckPath: "/health"}, 
 	}
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	
 	errChan := make(chan error)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	
+	var wg sync.WaitGroup
 
 	// Health Check
 	healthChecker := NewHealthChecker(&servers, *healthCheckIntervalSeconds)
-	go healthChecker.checkServersHealth(errChan, ctx)
+	wg.Add(1)
+	go healthChecker.checkServersHealth(&wg, errChan, ctx)
+
 
 	// Round Robin Balancer
 	balancer := NewRoundRobinBalancer(&servers)
@@ -90,7 +100,17 @@ func main() {
 		}
 	}()
 
-	err := <-errChan
+	// Listen to the error channel or to sigterm
+	select {
+	case err := <-errChan:
+		fmt.Println(fmt.Errorf("error: %w", err))
+	case err := <- sigChan:
+		fmt.Printf("termination Signal: %s\n", err)
+	}
+
+	// Cancel the context
 	cancel()
-	log.Fatal(err)
+
+	// Wait for the goroutines to finish
+	wg.Wait()
 }
